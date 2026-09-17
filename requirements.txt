@@ -1,5 +1,2 @@
-aiogram
-python-dotenv
-pydantic
-pydantic-core
 aiohttp
+python-dotenv
