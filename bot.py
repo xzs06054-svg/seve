@@ -28,13 +28,18 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
     raise RuntimeError(
-        "ПОМИЛКА: BOT_TOKEN не знайдено в Environment Variables"
+        "BOT_TOKEN не знайдено в Environment Variables"
     )
 
 
 API_URL = "https://api.telegram.org/bot" + TOKEN
 
-PORT = int(os.getenv("PORT", "10000"))
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
 
 RENDER_URL = os.getenv(
     "RENDER_EXTERNAL_URL",
@@ -48,12 +53,8 @@ WEBHOOK_SECRET = os.getenv(
 
 
 # ============================================================
-# BOT STATE
+# SETTINGS
 # ============================================================
-
-muted_users = set()
-
-deleted_messages_cache = {}
 
 auto_responder_enabled = True
 
@@ -63,6 +64,15 @@ auto_responder_text = (
     "будьласка без спаму"
 )
 
+
+# ============================================================
+# STATE
+# ============================================================
+
+muted_users = set()
+
+deleted_messages_cache = {}
+
 waiting_for_text = False
 
 
@@ -70,10 +80,15 @@ waiting_for_text = False
 # TELEGRAM API
 # ============================================================
 
-async def tg_api(session, method, **kwargs):
-    try:
+async def tg_api(
+    session,
+    method,
+    **kwargs
+):
 
-        url = API_URL + "/" + method
+    url = API_URL + "/" + method
+
+    try:
 
         async with session.post(
             url,
@@ -81,9 +96,11 @@ async def tg_api(session, method, **kwargs):
         ) as response:
 
             try:
+
                 result = await response.json()
 
             except Exception:
+
                 raw = await response.text()
 
                 print(
@@ -92,7 +109,7 @@ async def tg_api(session, method, **kwargs):
                 )
 
                 print(
-                    "TELEGRAM RAW RESPONSE:",
+                    "❌ TELEGRAM RAW RESPONSE:",
                     raw,
                     flush=True
                 )
@@ -101,6 +118,7 @@ async def tg_api(session, method, **kwargs):
                     "ok": False,
                     "description": raw
                 }
+
 
             if not result.get("ok"):
 
@@ -122,7 +140,9 @@ async def tg_api(session, method, **kwargs):
 
                 print(
                     "DESCRIPTION:",
-                    result.get("description"),
+                    result.get(
+                        "description"
+                    ),
                     flush=True
                 )
 
@@ -132,30 +152,19 @@ async def tg_api(session, method, **kwargs):
                     flush=True
                 )
 
+
             return result
 
-    except (
-        aiohttp.ClientError,
-        asyncio.TimeoutError
-    ) as e:
-
-        print(
-            "❌ NETWORK ERROR:",
-            method,
-            str(e),
-            flush=True
-        )
-
-        return {
-            "ok": False,
-            "description": "Network Error: " + str(e)
-        }
 
     except Exception as e:
 
         print(
-            "❌ UNKNOWN API ERROR:",
-            method,
+            "",
+            flush=True
+        )
+
+        print(
+            "❌ API EXCEPTION:",
             repr(e),
             flush=True
         )
@@ -170,30 +179,41 @@ async def tg_api(session, method, **kwargs):
 # SETTINGS KEYBOARD
 # ============================================================
 
-def get_settings_keyboard():
+def settings_keyboard():
 
     if auto_responder_enabled:
+
         status = "🟢 Увімкнено"
+
     else:
+
         status = "🔴 Вимкнено"
+
 
     return {
         "inline_keyboard": [
+
             [
                 {
-                    "text": (
+                    "text":
                         "Автовідповідач: "
-                        + status
-                    ),
-                    "callback_data": "toggle_ar"
+                        + status,
+
+                    "callback_data":
+                        "toggle_ar"
                 }
             ],
+
             [
                 {
-                    "text": "⚙️ Налаштувати текст",
-                    "callback_data": "edit_ar_text"
+                    "text":
+                        "✏️ Змінити текст",
+
+                    "callback_data":
+                        "edit_ar_text"
                 }
             ]
+
         ]
     }
 
@@ -202,92 +222,100 @@ def get_settings_keyboard():
 # MESSAGE PREVIEW
 # ============================================================
 
-def get_msg_preview(msg):
+def message_preview(msg):
 
-    if "text" in msg:
+    if msg.get("text"):
+
         return msg["text"]
 
+
     if "photo" in msg:
+
         return (
             "[Фото] "
-            + msg.get("caption", "")
+            + msg.get(
+                "caption",
+                ""
+            )
         ).strip()
+
 
     if "video" in msg:
+
         return (
             "[Відео] "
-            + msg.get("caption", "")
+            + msg.get(
+                "caption",
+                ""
+            )
         ).strip()
 
-    if "video_note" in msg:
-        return "[Кружок / Відеоповідомлення]"
 
     if "voice" in msg:
-        return "[Голосове повідомлення]"
+
+        return "[Голосове]"
+
+
+    if "video_note" in msg:
+
+        return "[Кружок]"
+
 
     if "document" in msg:
+
         return (
-            "[Файл: "
+            "[Файл] "
             + msg["document"].get(
                 "file_name",
-                "документ"
+                ""
             )
-            + "]"
-        )
+        ).strip()
+
+
+    if "animation" in msg:
+
+        return "[GIF]"
+
 
     if "sticker" in msg:
 
-        emoji = msg["sticker"].get(
-            "emoji",
-            ""
-        )
+        return "[Стікер]"
 
-        return (
-            "[Наліпка "
-            + emoji
-            + "]"
-        ).strip()
-
-    if "animation" in msg:
-        return "[GIF / Анімація]"
 
     if "audio" in msg:
-        return (
-            "[Аудіо] "
-            + msg.get("caption", "")
-        ).strip()
 
-    return "[Медіаповідомлення]"
+        return "[Аудіо]"
+
+
+    return "[Повідомлення]"
 
 
 # ============================================================
-# SEND MEDIA TO OWNER
+# SEND MESSAGE TO OWNER
 # ============================================================
 
-async def send_media_to_owner(
+async def send_to_owner(
     session,
     owner_chat_id,
     msg
 ):
 
     if not owner_chat_id:
-        print(
-            "❌ Немає user_chat_id власника",
-            flush=True
-        )
+
         return
+
 
     sender = msg.get(
         "from",
         {}
     )
 
-    sender_name = sender.get(
+    first_name = sender.get(
         "first_name",
         "Клієнт"
     )
 
-    sender_username = sender.get(
+    username = sender.get(
         "username"
     )
 
@@ -296,53 +324,41 @@ async def send_media_to_owner(
         "?"
     )
 
-    if sender_username:
 
-        user_info = (
+    if username:
+
+        sender_info = (
             "@"
-            + sender_username
+            + username
         )
 
     else:
 
-        user_info = (
+        sender_info = (
             "ID: "
             + str(sender_id)
         )
 
+
     header = (
-        "📥 Нове повідомлення від "
-        + sender_name
+        "📥 Повідомлення від "
+        + first_name
         + " ("
-        + user_info
-        + "):"
+        + sender_info
+        + ")"
     )
-
-    caption = msg.get(
-        "caption",
-        ""
-    )
-
-    if caption:
-
-        caption_text = (
-            header
-            + "\n\n"
-            + caption
-        )
-
-    else:
-
-        caption_text = header
 
 
     # TEXT
+
     if "text" in msg:
 
         await tg_api(
             session,
             "sendMessage",
+
             chat_id=owner_chat_id,
+
             text=(
                 header
                 + "\n\n"
@@ -354,130 +370,216 @@ async def send_media_to_owner(
 
 
     # PHOTO
+
     if "photo" in msg:
+
+        caption = (
+            header
+            + "\n\n"
+            + msg.get(
+                "caption",
+                ""
+            )
+        ).strip()
+
 
         await tg_api(
             session,
             "sendPhoto",
+
             chat_id=owner_chat_id,
-            photo=msg["photo"][-1]["file_id"],
-            caption=caption_text
+
+            photo=msg["photo"][-1][
+                "file_id"
+            ],
+
+            caption=caption
         )
 
         return
 
 
     # VIDEO
+
     if "video" in msg:
+
+        caption = (
+            header
+            + "\n\n"
+            + msg.get(
+                "caption",
+                ""
+            )
+        ).strip()
+
 
         await tg_api(
             session,
             "sendVideo",
+
             chat_id=owner_chat_id,
-            video=msg["video"]["file_id"],
-            caption=caption_text
+
+            video=msg["video"][
+                "file_id"
+            ],
+
+            caption=caption
         )
 
         return
 
 
     # DOCUMENT
+
     if "document" in msg:
+
+        caption = (
+            header
+            + "\n\n"
+            + msg.get(
+                "caption",
+                ""
+            )
+        ).strip()
+
 
         await tg_api(
             session,
             "sendDocument",
+
             chat_id=owner_chat_id,
-            document=msg["document"]["file_id"],
-            caption=caption_text
+
+            document=msg["document"][
+                "file_id"
+            ],
+
+            caption=caption
         )
 
         return
 
 
     # VOICE
+
     if "voice" in msg:
 
         await tg_api(
             session,
             "sendVoice",
+
             chat_id=owner_chat_id,
-            voice=msg["voice"]["file_id"],
-            caption=caption_text
-        )
 
-        return
-
-
-    # VIDEO NOTE
-    if "video_note" in msg:
-
-        await tg_api(
-            session,
-            "sendMessage",
-            chat_id=owner_chat_id,
-            text=(
-                header
-                + " [кружок]"
-            )
-        )
-
-        await tg_api(
-            session,
-            "sendVideoNote",
-            chat_id=owner_chat_id,
-            video_note=msg["video_note"]["file_id"]
-        )
-
-        return
-
-
-    # STICKER
-    if "sticker" in msg:
-
-        await tg_api(
-            session,
-            "sendMessage",
-            chat_id=owner_chat_id,
-            text=(
-                header
-                + " [стікер]"
-            )
-        )
-
-        await tg_api(
-            session,
-            "sendSticker",
-            chat_id=owner_chat_id,
-            sticker=msg["sticker"]["file_id"]
+            voice=msg["voice"][
+                "file_id"
+            ]
         )
 
         return
 
 
     # ANIMATION
+
     if "animation" in msg:
+
+        caption = (
+            header
+            + "\n\n"
+            + msg.get(
+                "caption",
+                ""
+            )
+        ).strip()
+
 
         await tg_api(
             session,
             "sendAnimation",
+
             chat_id=owner_chat_id,
-            animation=msg["animation"]["file_id"],
-            caption=caption_text
+
+            animation=msg["animation"][
+                "file_id"
+            ],
+
+            caption=caption
+        )
+
+        return
+
+
+    # STICKER
+
+    if "sticker" in msg:
+
+        await tg_api(
+            session,
+            "sendMessage",
+
+            chat_id=owner_chat_id,
+
+            text=(
+                header
+                + "\n\n[стікер]"
+            )
+        )
+
+        await tg_api(
+            session,
+            "sendSticker",
+
+            chat_id=owner_chat_id,
+
+            sticker=msg["sticker"][
+                "file_id"
+            ]
+        )
+
+        return
+
+
+    # VIDEO NOTE
+
+    if "video_note" in msg:
+
+        await tg_api(
+            session,
+            "sendMessage",
+
+            chat_id=owner_chat_id,
+
+            text=(
+                header
+                + "\n\n[кружок]"
+            )
+        )
+
+        await tg_api(
+            session,
+            "sendVideoNote",
+
+            chat_id=owner_chat_id,
+
+            video_note=msg["video_note"][
+                "file_id"
+            ]
         )
 
         return
 
 
     # AUDIO
+
     if "audio" in msg:
 
         await tg_api(
             session,
             "sendAudio",
+
             chat_id=owner_chat_id,
-            audio=msg["audio"]["file_id"],
-            caption=caption_text
+
+            audio=msg["audio"][
+                "file_id"
+            ]
         )
 
         return
@@ -487,15 +589,15 @@ async def send_media_to_owner(
 # AUTO RESPONDER
 # ============================================================
 
-async def send_auto_responder(
+async def send_auto_response(
     session,
     connection_id,
     chat_id,
-    message_id,
-    sender_id
+    message_id
 ):
 
     global auto_responder_enabled
+
 
     print(
         "",
@@ -503,53 +605,47 @@ async def send_auto_responder(
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
     print(
-        "🤖 АВТОВІДПОВІДАЧ ЗАПУЩЕНИЙ",
+        "🤖 AUTO RESPONDER",
         flush=True
     )
 
     print(
-        "connection_id =",
+        "connection_id:",
         connection_id,
         flush=True
     )
 
     print(
-        "chat_id       =",
+        "chat_id:",
         chat_id,
         flush=True
     )
 
     print(
-        "message_id    =",
+        "message_id:",
         message_id,
         flush=True
     )
 
     print(
-        "sender_id     =",
-        sender_id,
-        flush=True
-    )
-
-    print(
-        "enabled       =",
+        "enabled:",
         auto_responder_enabled,
         flush=True
     )
 
     print(
-        "text          =",
+        "text:",
         repr(auto_responder_text),
         flush=True
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
@@ -557,28 +653,32 @@ async def send_auto_responder(
     if not auto_responder_enabled:
 
         print(
-            "❌ АВТОВІДПОВІДАЧ ВИМКНЕНО",
+            "❌ AUTO RESPONDER ВИМКНЕНО",
             flush=True
         )
 
         return
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # ВАЖЛИВО:
-    # НЕ використовуємо reply_to_message_id.
-    # Просто відправляємо Business message.
-    # ========================================================
+    # Надсилаємо БЕЗ reply_parameters.
+    # --------------------------------------------------------
 
     result = await tg_api(
+
         session,
+
         "sendMessage",
 
-        business_connection_id=connection_id,
+        business_connection_id=
+            connection_id,
 
-        chat_id=chat_id,
+        chat_id=
+            chat_id,
 
-        text=auto_responder_text
+        text=
+            auto_responder_text
     )
 
 
@@ -597,14 +697,19 @@ async def send_auto_responder(
     if result.get("ok"):
 
         print(
-            "✅ АВТОВІДПОВІДЬ ВІДПРАВЛЕНА!",
+            "✅ АВТОВІДПОВІДЬ ВІДПРАВЛЕНА",
             flush=True
         )
 
     else:
 
         print(
-            "❌ TELEGRAM НЕ ВІДПРАВИВ АВТОВІДПОВІДЬ:",
+            "❌ АВТОВІДПОВІДЬ НЕ ВІДПРАВЛЕНА",
+            flush=True
+        )
+
+        print(
+            "Причина:",
             result.get(
                 "description"
             ),
@@ -624,16 +729,6 @@ async def handle_business_message(
     connection_id = msg.get(
         "business_connection_id"
     )
-
-    if not connection_id:
-
-        print(
-            "❌ business_connection_id відсутній",
-            flush=True
-        )
-
-        return
-
 
     chat = msg.get(
         "chat",
@@ -666,10 +761,6 @@ async def handle_business_message(
         ""
     )
 
-    reply_to = msg.get(
-        "reply_to_message"
-    )
-
 
     print(
         "",
@@ -677,7 +768,7 @@ async def handle_business_message(
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
@@ -723,15 +814,25 @@ async def handle_business_message(
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
+
+
+    if not connection_id:
+
+        print(
+            "❌ Немає business_connection_id",
+            flush=True
+        )
+
+        return
 
 
     if chat_type != "private":
 
         print(
-            "ℹ️ Не private chat — пропуск",
+            "ℹ️ Це не private chat",
             flush=True
         )
 
@@ -742,31 +843,36 @@ async def handle_business_message(
     # GET BUSINESS CONNECTION
     # ========================================================
 
-    connection_result = await tg_api(
+    result = await tg_api(
+
         session,
+
         "getBusinessConnection",
-        business_connection_id=connection_id
+
+        business_connection_id=
+            connection_id
     )
 
 
-    if not connection_result.get("ok"):
+    if not result.get("ok"):
 
         print(
-            "❌ getBusinessConnection ПОМИЛКА:",
-            connection_result.get(
-                "description"
-            ),
+            "❌ НЕ ВДАЛОСЯ ОТРИМАТИ BUSINESS CONNECTION",
             flush=True
         )
 
         return
 
 
-    connection = connection_result.get(
+    connection = result.get(
         "result",
         {}
     )
 
+
+    # ========================================================
+    # CONNECTION DATA
+    # ========================================================
 
     print(
         "",
@@ -780,31 +886,41 @@ async def handle_business_message(
 
     print(
         "id:",
-        connection.get("id"),
+        connection.get(
+            "id"
+        ),
         flush=True
     )
 
     print(
         "enabled:",
-        connection.get("is_enabled"),
+        connection.get(
+            "is_enabled"
+        ),
         flush=True
     )
 
     print(
         "user:",
-        connection.get("user"),
+        connection.get(
+            "user"
+        ),
         flush=True
     )
 
     print(
         "user_chat_id:",
-        connection.get("user_chat_id"),
+        connection.get(
+            "user_chat_id"
+        ),
         flush=True
     )
 
     print(
         "rights:",
-        connection.get("rights"),
+        connection.get(
+            "rights"
+        ),
         flush=True
     )
 
@@ -819,44 +935,43 @@ async def handle_business_message(
     ):
 
         print(
-            "❌ Business connection вимкнений",
+            "❌ BUSINESS CONNECTION ВИМКНЕНО",
             flush=True
         )
 
         return
 
 
-    # ========================================================
-    # ДУЖЕ ВАЖЛИВО:
-    #
-    # user.id = ID власника Business акаунта
-    #
-    # user_chat_id = ID чату власника
-    #
-    # НЕ МОЖНА порівнювати sender_id з user_chat_id.
-    # ========================================================
+    rights = connection.get(
+        "rights"
+    ) or {}
+
+
+    can_reply = rights.get(
+        "can_reply",
+        False
+    )
+
+
+    print(
+        "CAN_REPLY:",
+        can_reply,
+        flush=True
+    )
+
 
     owner_user = connection.get(
-        "user",
-        {}
-    )
+        "user"
+    ) or {}
+
 
     owner_user_id = owner_user.get(
         "id"
     )
 
+
     owner_chat_id = connection.get(
         "user_chat_id"
-    )
-
-
-    rights = connection.get(
-        "rights",
-        {}
-    )
-
-    can_reply = rights.get(
-        "can_reply"
     )
 
 
@@ -878,15 +993,9 @@ async def handle_business_message(
         flush=True
     )
 
-    print(
-        "CAN_REPLY:",
-        can_reply,
-        flush=True
-    )
-
 
     # ========================================================
-    # ПОВІДОМЛЕННЯ ВІД КЛІЄНТА
+    # MESSAGE FROM CLIENT
     # ========================================================
 
     if sender_id != owner_user_id:
@@ -897,33 +1006,93 @@ async def handle_business_message(
         )
 
         print(
-            "👤 ЦЕ ПОВІДОМЛЕННЯ ВІД КЛІЄНТА",
+            "👤 ПОВІДОМЛЕННЯ ВІД КЛІЄНТА",
             flush=True
         )
 
 
         # ----------------------------------------------------
-        # ПЕРЕДАЄМО ВЛАСНИКУ
+        # SEND TO OWNER
         # ----------------------------------------------------
 
-        await send_media_to_owner(
+        await send_to_owner(
+
             session,
+
             owner_chat_id,
+
             msg
         )
 
 
         # ----------------------------------------------------
-        # АВТОВІДПОВІДАЧ
+        # AUTO RESPONSE
         # ----------------------------------------------------
 
-        await send_auto_responder(
-            session,
-            connection_id,
-            chat_id,
-            message_id,
-            sender_id
-        )
+        if can_reply:
+
+            await send_auto_response(
+
+                session,
+
+                connection_id,
+
+                chat_id,
+
+                message_id
+            )
+
+        else:
+
+            print(
+                "",
+                flush=True
+            )
+
+            print(
+                "==========================================",
+                flush=True
+            )
+
+            print(
+                "❌ НЕМАЄ ПРАВА can_reply",
+                flush=True
+            )
+
+            print(
+                "Telegram не дозволяє боту",
+                flush=True
+            )
+
+            print(
+                "відправляти повідомлення",
+                flush=True
+            )
+
+            print(
+                "від імені Business-акаунта.",
+                flush=True
+            )
+
+            print(
+                "Потрібно увімкнути право",
+                flush=True
+            )
+
+            print(
+                "«Відповідати на повідомлення»",
+                flush=True
+            )
+
+            print(
+                "у налаштуваннях підключеного Business-бота.",
+                flush=True
+            )
+
+            print(
+                "==========================================",
+                flush=True
+            )
 
 
         # ----------------------------------------------------
@@ -933,7 +1102,7 @@ async def handle_business_message(
         if sender_id in muted_users:
 
             print(
-                "🤐 Користувач зам'ючений:",
+                "🤐 КОРИСТУВАЧ У MUTE:",
                 sender_id,
                 flush=True
             )
@@ -949,19 +1118,28 @@ async def handle_business_message(
             deleted_messages_cache[
                 sender_id
             ].append(
-                get_msg_preview(msg)
+                message_preview(msg)
             )
 
 
+            # deleteMessage
+            # залишається окремо,
+            # бо це вже існуюча функція.
+
             delete_result = await tg_api(
+
                 session,
+
                 "deleteMessage",
 
-                business_connection_id=connection_id,
+                business_connection_id=
+                    connection_id,
 
-                chat_id=chat_id,
+                chat_id=
+                    chat_id,
 
-                message_id=message_id
+                message_id=
+                    message_id
             )
 
 
@@ -975,7 +1153,7 @@ async def handle_business_message(
             else:
 
                 print(
-                    "❌ Не вдалося видалити:",
+                    "❌ DELETE ERROR:",
                     delete_result.get(
                         "description"
                     ),
@@ -987,11 +1165,11 @@ async def handle_business_message(
 
 
     # ========================================================
-    # КОМАНДИ ВЛАСНИКА
+    # OWNER MESSAGE
     # ========================================================
 
     print(
-        "👑 Це повідомлення власника",
+        "👑 ПОВІДОМЛЕННЯ ВЛАСНИКА",
         flush=True
     )
 
@@ -1005,33 +1183,43 @@ async def handle_business_message(
     # .mute
     # ========================================================
 
-    if text.startswith(".mute"):
+    if text.startswith(
+        ".mute"
+    ):
 
-        if not reply_to:
+        reply = msg.get(
+            "reply_to_message"
+        )
+
+
+        if not reply:
 
             await tg_api(
+
                 session,
-                "editMessageText",
 
-                business_connection_id=connection_id,
+                "sendMessage",
 
-                chat_id=chat_id,
+                business_connection_id=
+                    connection_id,
 
-                message_id=message_id,
+                chat_id=
+                    chat_id,
 
-                text=(
-                    "❌ Відповідай "
-                    "на повідомлення юзера!"
-                )
+                text=
+                    "❌ Відповідай на повідомлення юзера!"
             )
 
             return
 
 
-        target_id = (
-            reply_to
-            .get("from", {})
-            .get("id")
+        target = reply.get(
+            "from",
+            {}
+        )
+
+        target_id = target.get(
+            "id"
         )
 
 
@@ -1043,20 +1231,21 @@ async def handle_business_message(
 
 
         await tg_api(
+
             session,
-            "editMessageText",
 
-            business_connection_id=connection_id,
+            "sendMessage",
 
-            chat_id=chat_id,
+            business_connection_id=
+                connection_id,
 
-            message_id=message_id,
+            chat_id=
+                chat_id,
 
-            text=(
-                "🤐 Користувача "
-                "зам'ючено."
-            )
+            text=
+                "🤐 Користувача зам'ючено."
         )
+
 
         return
 
@@ -1067,34 +1256,43 @@ async def handle_business_message(
 
     if (
         text.startswith(".unmute")
-        or text.startswith(".umute")
+        or
+        text.startswith(".umute")
     ):
 
-        if not reply_to:
+        reply = msg.get(
+            "reply_to_message"
+        )
+
+
+        if not reply:
 
             await tg_api(
+
                 session,
-                "editMessageText",
 
-                business_connection_id=connection_id,
+                "sendMessage",
 
-                chat_id=chat_id,
+                business_connection_id=
+                    connection_id,
 
-                message_id=message_id,
+                chat_id=
+                    chat_id,
 
-                text=(
-                    "❌ Відповідай "
-                    "на повідомлення юзера!"
-                )
+                text=
+                    "❌ Відповідай на повідомлення юзера!"
             )
 
             return
 
 
-        target_id = (
-            reply_to
-            .get("from", {})
-            .get("id")
+        target = reply.get(
+            "from",
+            {}
+        )
+
+        target_id = target.get(
+            "id"
         )
 
 
@@ -1106,20 +1304,21 @@ async def handle_business_message(
 
 
         await tg_api(
+
             session,
-            "editMessageText",
 
-            business_connection_id=connection_id,
+            "sendMessage",
 
-            chat_id=chat_id,
+            business_connection_id=
+                connection_id,
 
-            message_id=message_id,
+            chat_id=
+                chat_id,
 
-            text=(
-                "🔊 Користувача "
-                "роз'ючено."
-            )
+            text=
+                "🔊 Користувача роз'ючено."
         )
+
 
         return
 
@@ -1128,33 +1327,45 @@ async def handle_business_message(
     # .nomute
     # ========================================================
 
-    if text.startswith(".nomute"):
+    if text.startswith(
+        ".nomute"
+    ):
 
-        if not reply_to:
+        reply = msg.get(
+            "reply_to_message"
+        )
+
+
+        if not reply:
 
             await tg_api(
+
                 session,
-                "editMessageText",
 
-                business_connection_id=connection_id,
+                "sendMessage",
 
-                chat_id=chat_id,
+                business_connection_id=
+                    connection_id,
 
-                message_id=message_id,
+                chat_id=
+                    chat_id,
 
-                text=(
-                    "❌ Відповідай "
-                    "на повідомлення!"
-                )
+                text=
+                    "❌ Відповідай на повідомлення!"
             )
 
             return
 
 
         target_id = (
-            reply_to
-            .get("from", {})
-            .get("id")
+            reply
+            .get(
+                "from",
+                {}
+            )
+            .get(
+                "id"
+            )
         )
 
 
@@ -1171,11 +1382,13 @@ async def handle_business_message(
                 for item in messages
             )
 
-            result_text = (
+
+            answer = (
                 "📥 Збережені повідомлення:"
                 "\n\n"
                 + history
             )
+
 
             deleted_messages_cache[
                 target_id
@@ -1183,72 +1396,77 @@ async def handle_business_message(
 
         else:
 
-            result_text = (
-                "📭 Немає збережених "
-                "повідомлень."
+            answer = (
+                "📭 Немає збережених повідомлень."
             )
 
 
         await tg_api(
+
             session,
-            "editMessageText",
 
-            business_connection_id=connection_id,
+            "sendMessage",
 
-            chat_id=chat_id,
+            business_connection_id=
+                connection_id,
 
-            message_id=message_id,
+            chat_id=
+                chat_id,
 
-            text=result_text
+            text=
+                answer
         )
+
 
         return
 
 
     # ========================================================
-    # .spam TEXT COUNT
+    # .spam
     # ========================================================
 
     spam_match = re.match(
+
         r"^\.spam\s+(.+)\s+(\d+)$",
+
         text
     )
 
 
     if spam_match:
 
-        spam_text = spam_match.group(1)
-
-        count = min(
-            int(spam_match.group(2)),
-            100
+        spam_text = spam_match.group(
+            1
         )
 
-
-        await tg_api(
-            session,
-            "deleteMessage",
-
-            business_connection_id=connection_id,
-
-            chat_id=chat_id,
-
-            message_id=message_id
+        count = min(
+            int(
+                spam_match.group(
+                    2
+                )
+            ),
+            100
         )
 
 
         for _ in range(count):
 
             await tg_api(
+
                 session,
+
                 "sendMessage",
 
-                business_connection_id=connection_id,
+                business_connection_id=
+                    connection_id,
 
-                chat_id=chat_id,
+                chat_id=
+                    chat_id,
 
-                text=spam_text
+                text=
+                    spam_text
             )
+
 
             await asyncio.sleep(
                 0.1
@@ -1263,8 +1481,11 @@ async def handle_business_message(
     # ========================================================
 
     animation_match = re.match(
+
         r"^\.v(\d*)\s+(.+)$",
+
         text,
+
         re.DOTALL
     )
 
@@ -1272,11 +1493,16 @@ async def handle_business_message(
     if animation_match:
 
         seconds_text = (
-            animation_match.group(1)
+            animation_match.group(
+                1
+            )
         )
 
+
         animation_text = (
-            animation_match.group(2)
+            animation_match.group(
+                2
+            )
         )
 
 
@@ -1291,35 +1517,39 @@ async def handle_business_message(
             seconds = 10
 
 
-        max_spaces = 8
+        spaces = 8
 
         frames = []
 
 
         for i in range(
-            max_spaces + 1
+            spaces + 1
         ):
 
             frames.append(
-                "\u00A0" * i
+                (
+                    "\u00A0" * i
+                )
                 + animation_text
             )
 
 
         for i in range(
-            max_spaces - 1,
+            spaces - 1,
             0,
             -1
         ):
 
             frames.append(
-                "\u00A0" * i
+                (
+                    "\u00A0" * i
+                )
                 + animation_text
             )
 
 
         delay = max(
-            1.0,
+            0.5,
             seconds / len(frames)
         )
 
@@ -1346,56 +1576,68 @@ async def handle_business_message(
 
 
             result = await tg_api(
+
                 session,
+
                 "editMessageText",
 
-                business_connection_id=connection_id,
+                business_connection_id=
+                    connection_id,
 
-                chat_id=chat_id,
+                chat_id=
+                    chat_id,
 
-                message_id=message_id,
+                message_id=
+                    message_id,
 
-                text=frame
+                text=
+                    frame
             )
 
 
-            if not result.get("ok"):
+            if not result.get(
+                "ok"
+            ):
 
-                description = result.get(
-                    "description",
-                    ""
+                description = (
+                    result.get(
+                        "description",
+                        ""
+                    )
                 )
 
 
                 if (
                     "message is not modified"
                     in description
-                    or "BUSINESS_PEER_INVALID"
-                    in description
                 ):
 
-                    break
+                    continue
 
 
-                await asyncio.sleep(
-                    1.5
+                print(
+                    "❌ ANIMATION ERROR:",
+                    description,
+                    flush=True
                 )
 
-            else:
 
-                await asyncio.sleep(
-                    delay
-                )
+                break
+
+
+            await asyncio.sleep(
+                delay
+            )
 
 
         return
 
 
 # ============================================================
-# PRIVATE BOT MESSAGE
+# NORMAL MESSAGE
 # ============================================================
 
-async def handle_private_message(
+async def handle_normal_message(
     session,
     msg
 ):
@@ -1420,7 +1662,7 @@ async def handle_private_message(
 
 
     # ========================================================
-    # SAVE AUTO RESPONSE TEXT
+    # NEW AUTO RESPONSE TEXT
     # ========================================================
 
     if (
@@ -1435,18 +1677,20 @@ async def handle_private_message(
 
 
         await tg_api(
+
             session,
+
             "sendMessage",
 
-            chat_id=chat_id,
+            chat_id=
+                chat_id,
 
-            text=(
-                "✅ Текст автовідповідача "
-                "збережено!\n\n"
-                + auto_responder_text
-            ),
+            text=
+                "✅ Текст автовідповідача збережено!\n\n"
+                + auto_responder_text,
 
-            reply_markup=get_settings_keyboard()
+            reply_markup=
+                settings_keyboard()
         )
 
 
@@ -1454,7 +1698,7 @@ async def handle_private_message(
 
 
     # ========================================================
-    # SETTINGS
+    # COMMANDS
     # ========================================================
 
     if text in (
@@ -1467,25 +1711,27 @@ async def handle_private_message(
 
 
         await tg_api(
+
             session,
+
             "sendMessage",
 
-            chat_id=chat_id,
+            chat_id=
+                chat_id,
 
-            text=(
-                "⚙️ Меню керування "
-                "автовідповідачем:"
-            ),
+            text=
+                "⚙️ Керування ботом:",
 
-            reply_markup=get_settings_keyboard()
+            reply_markup=
+                settings_keyboard()
         )
 
 
 # ============================================================
-# CALLBACK QUERY
+# CALLBACK
 # ============================================================
 
-async def handle_callback_query(
+async def handle_callback(
     session,
     callback
 ):
@@ -1496,6 +1742,10 @@ async def handle_callback_query(
 
     callback_id = callback.get(
         "id"
+    )
+
+    data = callback.get(
+        "data"
     )
 
     message = callback.get(
@@ -1516,10 +1766,6 @@ async def handle_callback_query(
         "message_id"
     )
 
-    data = callback.get(
-        "data"
-    )
-
 
     # ========================================================
     # TOGGLE
@@ -1534,40 +1780,48 @@ async def handle_callback_query(
 
         if auto_responder_enabled:
 
-            status = "увімкнено"
+            text = (
+                "🟢 Автовідповідач увімкнено"
+            )
 
         else:
 
-            status = "вимкнено"
+            text = (
+                "🔴 Автовідповідач вимкнено"
+            )
 
 
         await tg_api(
+
             session,
+
             "answerCallbackQuery",
 
-            callback_query_id=callback_id,
+            callback_query_id=
+                callback_id,
 
-            text=(
-                "Автовідповідач "
-                + status
-            )
+            text=
+                text
         )
 
 
         await tg_api(
+
             session,
+
             "editMessageText",
 
-            chat_id=chat_id,
+            chat_id=
+                chat_id,
 
-            message_id=message_id,
+            message_id=
+                message_id,
 
-            text=(
-                "⚙️ Меню керування "
-                "автовідповідачем:"
-            ),
+            text=
+                "⚙️ Керування ботом:",
 
-            reply_markup=get_settings_keyboard()
+            reply_markup=
+                settings_keyboard()
         )
 
 
@@ -1584,23 +1838,27 @@ async def handle_callback_query(
 
 
         await tg_api(
+
             session,
+
             "answerCallbackQuery",
 
-            callback_query_id=callback_id
+            callback_query_id=
+                callback_id
         )
 
 
         await tg_api(
+
             session,
+
             "sendMessage",
 
-            chat_id=chat_id,
+            chat_id=
+                chat_id,
 
-            text=(
-                "Напиши текст, який буде "
-                "відправляти автовідповідач:"
-            )
+            text=
+                "Напиши новий текст автовідповідача:"
         )
 
 
@@ -1620,50 +1878,64 @@ async def process_update(
 
     print(
         "PROCESS UPDATE:",
-        list(update.keys()),
+        list(
+            update.keys()
+        ),
         flush=True
     )
 
 
     # BUSINESS MESSAGE
+
     if "business_message" in update:
 
         await handle_business_message(
+
             session,
-            update["business_message"]
+
+            update[
+                "business_message"
+            ]
         )
 
         return
 
 
     # NORMAL MESSAGE
+
     if "message" in update:
 
-        await handle_private_message(
+        await handle_normal_message(
+
             session,
-            update["message"]
+
+            update[
+                "message"
+            ]
         )
 
         return
 
 
     # CALLBACK
+
     if "callback_query" in update:
 
-        await handle_callback_query(
+        await handle_callback(
+
             session,
-            update["callback_query"]
+
+            update[
+                "callback_query"
+            ]
         )
 
         return
 
 
     # BUSINESS CONNECTION
-    if "business_connection" in update:
 
-        connection = update[
-            "business_connection"
-        ]
+    if "business_connection" in update:
 
         print(
             "",
@@ -1671,12 +1943,14 @@ async def process_update(
         )
 
         print(
-            "🔗 BUSINESS CONNECTION",
+            "🔗 BUSINESS CONNECTION UPDATE",
             flush=True
         )
 
         print(
-            connection,
+            update[
+                "business_connection"
+            ],
             flush=True
         )
 
@@ -1684,13 +1958,13 @@ async def process_update(
 
 
     print(
-        "ℹ️ Невідомий тип update",
+        "ℹ️ UPDATE НЕ ОБРОБЛЕНО",
         flush=True
     )
 
 
 # ============================================================
-# HTTP ROOT
+# HTTP
 # ============================================================
 
 async def root(request):
@@ -1700,10 +1974,6 @@ async def root(request):
     )
 
 
-# ============================================================
-# HEALTH
-# ============================================================
-
 async def health(request):
 
     return web.Response(
@@ -1712,10 +1982,12 @@ async def health(request):
 
 
 # ============================================================
-# TELEGRAM WEBHOOK
+# WEBHOOK
 # ============================================================
 
-async def telegram_webhook(request):
+async def telegram_webhook(
+    request
+):
 
     try:
 
@@ -1727,7 +1999,7 @@ async def telegram_webhook(request):
         if secret != WEBHOOK_SECRET:
 
             print(
-                "❌ WEBHOOK SECRET INVALID",
+                "❌ INVALID WEBHOOK SECRET",
                 flush=True
             )
 
@@ -1767,7 +2039,9 @@ async def telegram_webhook(request):
 
 
         await process_update(
+
             session,
+
             update
         )
 
@@ -1808,20 +2082,19 @@ async def telegram_webhook(request):
         )
 
 
-        # Telegram отримує HTTP 200,
-        # щоб не повторював update нескінченно.
-
         return web.json_response(
+
             {
                 "ok": False,
                 "error": str(e)
             },
+
             status=200
         )
 
 
 # ============================================================
-# SET WEBHOOK
+# WEBHOOK SETUP
 # ============================================================
 
 async def setup_webhook(
@@ -1831,12 +2104,7 @@ async def setup_webhook(
     if not RENDER_URL:
 
         print(
-            "⚠️ RENDER_EXTERNAL_URL не заданий",
-            flush=True
-        )
-
-        print(
-            "Webhook не встановлюється.",
+            "❌ RENDER_EXTERNAL_URL НЕ ВКАЗАНИЙ",
             flush=True
         )
 
@@ -1844,8 +2112,11 @@ async def setup_webhook(
 
 
     webhook_url = (
+
         RENDER_URL
+
         + "/telegram/webhook/"
+
         + WEBHOOK_SECRET
     )
 
@@ -1856,12 +2127,12 @@ async def setup_webhook(
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
     print(
-        "ВСТАНОВЛЕННЯ WEBHOOK",
+        "🌐 SETTING TELEGRAM WEBHOOK",
         flush=True
     )
 
@@ -1871,16 +2142,19 @@ async def setup_webhook(
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
 
     result = await tg_api(
+
         session,
+
         "setWebhook",
 
-        url=webhook_url,
+        url=
+            webhook_url,
 
         allowed_updates=[
             "message",
@@ -1894,11 +2168,6 @@ async def setup_webhook(
 
 
     print(
-        "",
-        flush=True
-    )
-
-    print(
         "SET WEBHOOK RESULT:",
         result,
         flush=True
@@ -1906,7 +2175,7 @@ async def setup_webhook(
 
 
 # ============================================================
-# CREATE APP
+# APP
 # ============================================================
 
 async def create_app():
@@ -1977,17 +2246,17 @@ async def main():
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
     print(
-        "          SEVE BOT ЗАПУЩЕНО",
+        "          SEVE BOT STARTED",
         flush=True
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
@@ -2017,12 +2286,14 @@ async def main():
 
     print(
         "AUTO TEXT:",
-        repr(auto_responder_text),
+        repr(
+            auto_responder_text
+        ),
         flush=True
     )
 
     print(
-        "========================================",
+        "==========================================",
         flush=True
     )
 
@@ -2039,6 +2310,7 @@ async def main():
 
 
     site = web.TCPSite(
+
         runner,
 
         "0.0.0.0",
@@ -2056,17 +2328,13 @@ async def main():
     )
 
     print(
-        "🌐 HTTP SERVER ЗАПУЩЕНИЙ",
+        "🌐 SERVER LISTENING",
         flush=True
     )
 
     print(
-        "0.0.0.0:" + str(PORT),
-        flush=True
-    )
-
-    print(
-        "========================================",
+        "0.0.0.0:"
+        + str(PORT),
         flush=True
     )
 
