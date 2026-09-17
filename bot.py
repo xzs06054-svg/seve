@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import re
-import secrets
 
 import aiohttp
 from aiohttp import web
@@ -10,34 +9,46 @@ from dotenv import load_dotenv
 
 
 # ============================================================
-# НАЛАШТУВАННЯ
+# LOGGING
 # ============================================================
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
+load_dotenv()
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 if not TOKEN:
-    print("================================================")
-    print("ПОМИЛКА: BOT_TOKEN НЕ ЗНАЙДЕНО")
-    print("На Render додай BOT_TOKEN у Environment.")
-    print("================================================")
+    print("==================================================")
+    print("ERROR: BOT_TOKEN НЕ ЗНАЙДЕНО")
+    print("Додай BOT_TOKEN у Render -> Environment.")
+    print("==================================================")
+    raise SystemExit(1)
 
 
-API_URL = ""
-
-if TOKEN:
-    API_URL = "https://api.telegram.org/bot" + TOKEN
+API_URL = "https://api.telegram.org/bot" + TOKEN
 
 
-# Render автоматично дає ці змінні
-PORT = int(os.environ.get("PORT", "10000"))
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+# Render сам встановлює PORT
+try:
+    PORT = int(os.environ.get("PORT", "10000"))
+except Exception:
+    PORT = 10000
+
+
+RENDER_EXTERNAL_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL",
+    ""
+).strip()
+
 
 IS_RENDER = bool(
     os.environ.get("RENDER")
@@ -45,15 +56,15 @@ IS_RENDER = bool(
 )
 
 
-# Секрет для Telegram webhook
+# Секрет webhook
 WEBHOOK_SECRET = os.environ.get(
     "WEBHOOK_SECRET",
-    secrets.token_urlsafe(32)
-)
+    "seve_bot_webhook_secret"
+).strip()
 
 
 # ============================================================
-# СТАН БОТА
+# BOT STATE
 # ============================================================
 
 muted_users = set()
@@ -65,16 +76,17 @@ auto_responder_enabled = True
 auto_responder_text = (
     "привіт це мій авто відповідач\n"
     "я прийду в найближчий час\n"
-    "бульдласка без спаму"
+    "будьласка без спаму"
 )
 
 waiting_for_text = False
 
-last_update_id = 0
 
-telegram_ready = False
+# ============================================================
+# BUSINESS CONNECTION CACHE
+# ============================================================
 
-http_ready = False
+business_connections = {}
 
 
 # ============================================================
@@ -82,50 +94,55 @@ http_ready = False
 # ============================================================
 
 async def tg_api(session, method, **kwargs):
-    if not API_URL:
-        return {
-            "ok": False,
-            "description": "BOT_TOKEN не встановлений"
-        }
 
     url = API_URL + "/" + method
 
     try:
+
         async with session.post(
             url,
             json=kwargs
-        ) as resp:
+        ) as response:
 
-            text = await resp.text()
+            raw_text = await response.text()
 
             try:
-                data = await resp.json()
+                data = await response.json()
             except Exception:
+
                 return {
                     "ok": False,
                     "description": (
-                        "Telegram повернув неправильний JSON: "
-                        + text[:500]
+                        "Telegram returned invalid JSON: "
+                        + raw_text[:500]
                     )
                 }
 
-            if resp.status != 200:
+
+            if response.status != 200:
+
                 print(
-                    "Telegram HTTP ERROR:",
-                    resp.status,
+                    "TELEGRAM HTTP ERROR:",
+                    method,
+                    response.status,
                     data
                 )
 
+
             return data
 
+
     except asyncio.CancelledError:
+
         raise
 
+
     except Exception as e:
+
         print(
-            "Telegram API ERROR:",
+            "TELEGRAM NETWORK ERROR:",
             method,
-            str(e)
+            repr(e)
         )
 
         return {
@@ -135,29 +152,41 @@ async def tg_api(session, method, **kwargs):
 
 
 # ============================================================
-# SETTINGS
+# SETTINGS KEYBOARD
 # ============================================================
 
 def get_settings_keyboard():
 
-    status = (
-        "🟢 Увімкнено"
-        if auto_responder_enabled
-        else "🔴 Вимкнено"
-    )
+    if auto_responder_enabled:
+
+        status = "🟢 Увімкнено"
+
+    else:
+
+        status = "🔴 Вимкнено"
+
 
     return {
         "inline_keyboard": [
             [
                 {
-                    "text": "Автовідповідач: " + status,
+                    "text": (
+                        "Автовідповідач: "
+                        + status
+                    ),
                     "callback_data": "toggle_ar"
                 }
             ],
             [
                 {
-                    "text": "⚙️ Налаштувати текст",
+                    "text": "⚙️ Змінити текст",
                     "callback_data": "edit_ar_text"
+                }
+            ],
+            [
+                {
+                    "text": "📋 Допомога",
+                    "callback_data": "show_help"
                 }
             ]
         ]
@@ -176,15 +205,15 @@ def get_help_text():
         "/start — головне меню\n"
         "/seting — налаштування\n"
         "/settings — налаштування\n"
-        "/help — список команд\n\n"
+        "/help — допомога\n\n"
 
         "👤 КЕРУВАННЯ КОРИСТУВАЧАМИ\n\n"
 
         ".mute — зам'ютити користувача\n"
-        "Використовуй відповіддю на його повідомлення.\n\n"
+        "Відповідай цією командою на його повідомлення.\n\n"
 
         ".umute — розм'ютити користувача\n"
-        "Використовуй відповіддю на його повідомлення.\n\n"
+        "Відповідай цією командою на його повідомлення.\n\n"
 
         ".unmute — те саме, що .umute\n\n"
 
@@ -200,10 +229,9 @@ def get_help_text():
         "🎬 АНІМАЦІЯ\n\n"
 
         ".v текст\n"
-        "або\n"
         ".v20 текст\n\n"
 
-        ".v20 означає анімацію протягом 20 секунд."
+        ".v20 редагує одне й те саме повідомлення приблизно 20 секунд."
     )
 
 
@@ -214,27 +242,38 @@ def get_help_text():
 def get_msg_preview(msg):
 
     if "text" in msg:
+
         return msg["text"]
 
+
     if "photo" in msg:
+
         return (
             "[Фото] "
             + msg.get("caption", "")
         ).strip()
 
+
     if "video" in msg:
+
         return (
             "[Відео] "
             + msg.get("caption", "")
         ).strip()
 
+
     if "video_note" in msg:
+
         return "[Кружок / Відеоповідомлення]"
 
+
     if "voice" in msg:
+
         return "[Голосове повідомлення]"
 
+
     if "document" in msg:
+
         return (
             "[Файл: "
             + msg["document"].get(
@@ -244,7 +283,9 @@ def get_msg_preview(msg):
             + "]"
         )
 
+
     if "sticker" in msg:
+
         emoji = msg["sticker"].get(
             "emoji",
             ""
@@ -256,20 +297,25 @@ def get_msg_preview(msg):
             + "]"
         ).strip()
 
+
     if "animation" in msg:
+
         return "[GIF / Анімація]"
 
+
     if "audio" in msg:
+
         return (
             "[Аудіо] "
             + msg.get("caption", "")
         ).strip()
 
+
     return "[Медіаповідомлення]"
 
 
 # ============================================================
-# ВІДПРАВКА МЕДІА ВЛАСНИКУ
+# SEND MEDIA TO OWNER
 # ============================================================
 
 async def send_media_to_owner(
@@ -283,14 +329,17 @@ async def send_media_to_owner(
         {}
     )
 
+
     sender_name = sender.get(
         "first_name",
         "Клієнт"
     )
 
+
     sender_username = sender.get(
         "username"
     )
+
 
     if sender_username:
 
@@ -303,8 +352,14 @@ async def send_media_to_owner(
 
         user_info = (
             "ID: "
-            + str(sender.get("id"))
+            + str(
+                sender.get(
+                    "id",
+                    "unknown"
+                )
+            )
         )
+
 
     header = (
         "📥 Нове повідомлення від "
@@ -314,17 +369,19 @@ async def send_media_to_owner(
         + "):"
     )
 
-    user_caption = msg.get(
+
+    caption = msg.get(
         "caption",
         ""
     )
 
-    if user_caption:
+
+    if caption:
 
         caption_text = (
             header
             + "\n\n"
-            + user_caption
+            + caption
         )
 
     else:
@@ -335,22 +392,17 @@ async def send_media_to_owner(
     # TEXT
     if (
         "text" in msg
-        and not any(
-            key in msg
-            for key in [
-                "photo",
-                "video",
-                "document",
-                "voice",
-                "video_note",
-                "sticker",
-                "audio",
-                "animation"
-            ]
-        )
+        and "photo" not in msg
+        and "video" not in msg
+        and "document" not in msg
+        and "voice" not in msg
+        and "video_note" not in msg
+        and "sticker" not in msg
+        and "audio" not in msg
+        and "animation" not in msg
     ):
 
-        await tg_api(
+        result = await tg_api(
             session,
             "sendMessage",
             chat_id=owner_id,
@@ -361,71 +413,63 @@ async def send_media_to_owner(
             )
         )
 
-        return
+        return result
 
 
     # PHOTO
     if "photo" in msg:
 
-        photo_id = msg["photo"][-1]["file_id"]
+        file_id = msg["photo"][-1]["file_id"]
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendPhoto",
             chat_id=owner_id,
-            photo=photo_id,
+            photo=file_id,
             caption=caption_text
         )
-
-        return
 
 
     # VIDEO
     if "video" in msg:
 
-        video_id = msg["video"]["file_id"]
+        file_id = msg["video"]["file_id"]
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendVideo",
             chat_id=owner_id,
-            video=video_id,
+            video=file_id,
             caption=caption_text
         )
-
-        return
 
 
     # DOCUMENT
     if "document" in msg:
 
-        document_id = msg["document"]["file_id"]
+        file_id = msg["document"]["file_id"]
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendDocument",
             chat_id=owner_id,
-            document=document_id,
+            document=file_id,
             caption=caption_text
         )
-
-        return
 
 
     # VOICE
     if "voice" in msg:
 
-        voice_id = msg["voice"]["file_id"]
+        file_id = msg["voice"]["file_id"]
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendVoice",
             chat_id=owner_id,
-            voice=voice_id,
+            voice=file_id,
             caption=caption_text
         )
-
-        return
 
 
     # VIDEO NOTE
@@ -435,17 +479,15 @@ async def send_media_to_owner(
             session,
             "sendMessage",
             chat_id=owner_id,
-            text=header + "\n\n[Кружок]"
+            text=header
         )
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendVideoNote",
             chat_id=owner_id,
             video_note=msg["video_note"]["file_id"]
         )
-
-        return
 
 
     # STICKER
@@ -455,23 +497,21 @@ async def send_media_to_owner(
             session,
             "sendMessage",
             chat_id=owner_id,
-            text=header + "\n\n[Стікер]"
+            text=header
         )
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendSticker",
             chat_id=owner_id,
             sticker=msg["sticker"]["file_id"]
         )
 
-        return
 
-
-    # ANIMATION / GIF
+    # ANIMATION
     if "animation" in msg:
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendAnimation",
             chat_id=owner_id,
@@ -479,13 +519,11 @@ async def send_media_to_owner(
             caption=caption_text
         )
 
-        return
-
 
     # AUDIO
     if "audio" in msg:
 
-        await tg_api(
+        return await tg_api(
             session,
             "sendAudio",
             chat_id=owner_id,
@@ -493,26 +531,18 @@ async def send_media_to_owner(
             caption=caption_text
         )
 
-        return
 
-
-    # FALLBACK
-    if (
-        "chat" in msg
-        and "message_id" in msg
-    ):
-
-        await tg_api(
-            session,
-            "copyMessage",
-            chat_id=owner_id,
-            from_chat_id=msg["chat"]["id"],
-            message_id=msg["message_id"]
-        )
+    return await tg_api(
+        session,
+        "copyMessage",
+        chat_id=owner_id,
+        from_chat_id=msg["chat"]["id"],
+        message_id=msg["message_id"]
+    )
 
 
 # ============================================================
-# PRIVATE MESSAGE
+# PRIVATE BOT MESSAGE
 # ============================================================
 
 async def handle_private_message(
@@ -523,15 +553,21 @@ async def handle_private_message(
     global waiting_for_text
     global auto_responder_text
 
+
     chat = msg.get(
         "chat",
         {}
     )
 
-    chat_id = chat.get("id")
+
+    chat_id = chat.get(
+        "id"
+    )
+
 
     if not chat_id:
         return
+
 
     text = msg.get(
         "text",
@@ -539,7 +575,10 @@ async def handle_private_message(
     )
 
 
-    # Очікуємо новий текст автовідповідача
+    # --------------------------------------------------------
+    # SAVE AUTO RESPONSE TEXT
+    # --------------------------------------------------------
+
     if (
         waiting_for_text
         and text
@@ -550,13 +589,13 @@ async def handle_private_message(
 
         waiting_for_text = False
 
+
         await tg_api(
             session,
             "sendMessage",
             chat_id=chat_id,
             text=(
                 "✅ Текст автовідповідача збережено!\n\n"
-                "Новий текст:\n"
                 + auto_responder_text
             ),
             reply_markup=get_settings_keyboard()
@@ -565,7 +604,10 @@ async def handle_private_message(
         return
 
 
+    # --------------------------------------------------------
     # START / SETTINGS
+    # --------------------------------------------------------
+
     if text in [
         "/start",
         "/settings",
@@ -573,6 +615,7 @@ async def handle_private_message(
     ]:
 
         waiting_for_text = False
+
 
         await tg_api(
             session,
@@ -587,7 +630,10 @@ async def handle_private_message(
         return
 
 
+    # --------------------------------------------------------
     # HELP
+    # --------------------------------------------------------
+
     if text == "/help":
 
         await tg_api(
@@ -601,7 +647,7 @@ async def handle_private_message(
 
 
 # ============================================================
-# CALLBACKS
+# CALLBACK QUERY
 # ============================================================
 
 async def handle_callback_query(
@@ -612,31 +658,50 @@ async def handle_callback_query(
     global auto_responder_enabled
     global waiting_for_text
 
+
     callback_id = callback.get(
         "id"
     )
+
 
     message = callback.get(
         "message"
     )
 
+
     if not message:
         return
 
-    chat_id = message["chat"]["id"]
 
-    message_id = message["message_id"]
-
-    data = callback.get(
-        "data"
+    chat = message.get(
+        "chat",
+        {}
     )
 
 
+    chat_id = chat.get(
+        "id"
+    )
+
+
+    message_id = message.get(
+        "message_id"
+    )
+
+
+    data = callback.get(
+        "data",
+        ""
+    )
+
+
+    # TOGGLE
     if data == "toggle_ar":
 
         auto_responder_enabled = (
             not auto_responder_enabled
         )
+
 
         if auto_responder_enabled:
 
@@ -672,9 +737,11 @@ async def handle_callback_query(
         return
 
 
+    # CHANGE TEXT
     if data == "edit_ar_text":
 
         waiting_for_text = True
+
 
         await tg_api(
             session,
@@ -682,40 +749,298 @@ async def handle_callback_query(
             callback_query_id=callback_id
         )
 
+
         await tg_api(
             session,
             "sendMessage",
             chat_id=chat_id,
             text=(
-                "Напиши текст, який буде "
-                "відправляти автовідповідач."
+                "Напиши новий текст "
+                "автовідповідача."
             )
         )
 
         return
 
 
+    # HELP
+    if data == "show_help":
+
+        await tg_api(
+            session,
+            "answerCallbackQuery",
+            callback_query_id=callback_id
+        )
+
+
+        await tg_api(
+            session,
+            "sendMessage",
+            chat_id=chat_id,
+            text=get_help_text()
+        )
+
+        return
+
+
 # ============================================================
-# ПОШУК КОРИСТУВАЧА ДЛЯ REPLY-КОМАНД
+# GET BUSINESS CONNECTION
 # ============================================================
 
-def get_reply_user_id(msg):
+async def get_business_connection(
+    session,
+    connection_id
+):
 
-    reply = msg.get(
-        "reply_to_message"
+    # Спочатку пробуємо кеш
+    cached = business_connections.get(
+        connection_id
     )
 
-    if not reply:
+
+    if cached:
+
+        return cached
+
+
+    result = await tg_api(
+        session,
+        "getBusinessConnection",
+        business_connection_id=connection_id
+    )
+
+
+    if not result.get("ok"):
+
+        print(
+            "❌ getBusinessConnection ERROR:"
+        )
+
+        print(
+            result.get(
+                "description"
+            )
+        )
+
         return None
 
-    sender = reply.get(
-        "from",
+
+    connection = result.get(
+        "result"
+    )
+
+
+    if not connection:
+
+        return None
+
+
+    business_connections[
+        connection_id
+    ] = connection
+
+
+    return connection
+
+
+# ============================================================
+# PRINT BUSINESS RIGHTS
+# ============================================================
+
+def print_business_rights(
+    connection
+):
+
+    rights = connection.get(
+        "rights",
         {}
     )
 
-    return sender.get(
-        "id"
+
+    print("")
+    print("==============================================")
+    print("BUSINESS CONNECTION")
+    print("==============================================")
+    print(
+        "ID:",
+        connection.get("id")
     )
+    print(
+        "OWNER:",
+        connection.get(
+            "user_chat_id"
+        )
+    )
+    print(
+        "ENABLED:",
+        connection.get(
+            "is_enabled"
+        )
+    )
+    print(
+        "CAN_REPLY:",
+        rights.get(
+            "can_reply"
+        )
+    )
+    print(
+        "CAN_READ_MESSAGES:",
+        rights.get(
+            "can_read_messages"
+        )
+    )
+    print(
+        "CAN_DELETE_ALL_MESSAGES:",
+        rights.get(
+            "can_delete_all_messages"
+        )
+    )
+    print(
+        "CAN_DELETE_SENT_MESSAGES:",
+        rights.get(
+            "can_delete_sent_messages"
+        )
+    )
+    print("==============================================")
+    print("")
+
+
+# ============================================================
+# SEND AUTO RESPONSE
+# ============================================================
+
+async def send_auto_response(
+    session,
+    connection_id,
+    chat_id,
+    message_id
+):
+
+    connection = business_connections.get(
+        connection_id
+    )
+
+
+    if not connection:
+
+        connection = await get_business_connection(
+            session,
+            connection_id
+        )
+
+
+    if not connection:
+
+        print(
+            "❌ Немає Business Connection."
+        )
+
+        return False
+
+
+    if not connection.get(
+        "is_enabled",
+        False
+    ):
+
+        print(
+            "❌ Business Connection вимкнений."
+        )
+
+        return False
+
+
+    rights = connection.get(
+        "rights",
+        {}
+    )
+
+
+    can_reply = rights.get(
+        "can_reply",
+        False
+    )
+
+
+    if not can_reply:
+
+        print("")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("❌ АВТОВІДПОВІДАЧ НЕ МОЖЕ ВІДПОВІДАТИ")
+        print("Причина: can_reply = False")
+        print("")
+        print("У Telegram Business потрібно дозволити")
+        print("боту право відповідати на повідомлення.")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("")
+
+        return False
+
+
+    print("")
+    print("🤖 ВІДПРАВКА АВТОВІДПОВІДІ")
+    print(
+        "chat_id:",
+        chat_id
+    )
+    print(
+        "message_id:",
+        message_id
+    )
+    print(
+        "business_connection_id:",
+        connection_id
+    )
+    print(
+        "text:",
+        auto_responder_text
+    )
+
+
+    # ВАЖЛИВО:
+    # Використовуємо reply_parameters,
+    # а не старий reply_to_message_id.
+    result = await tg_api(
+        session,
+        "sendMessage",
+        business_connection_id=connection_id,
+        chat_id=chat_id,
+        text=auto_responder_text,
+        reply_parameters={
+            "message_id": message_id,
+            "allow_sending_without_reply": True
+        }
+    )
+
+
+    print(
+        "AUTO RESPONSE RESULT:",
+        result
+    )
+
+
+    if result.get("ok"):
+
+        print(
+            "✅ АВТОВІДПОВІДЬ ВІДПРАВЛЕНА"
+        )
+
+        return True
+
+
+    print("")
+    print(
+        "❌ АВТОВІДПОВІДЬ НЕ ВІДПРАВЛЕНА"
+    )
+    print(
+        "Telegram:",
+        result.get(
+            "description"
+        )
+    )
+    print("")
+
+    return False
 
 
 # ============================================================
@@ -727,11 +1052,17 @@ async def handle_business_message(
     msg
 ):
 
-    conn_id = msg.get(
+    connection_id = msg.get(
         "business_connection_id"
     )
 
-    if not conn_id:
+
+    if not connection_id:
+
+        print(
+            "Business message без business_connection_id"
+        )
+
         return
 
 
@@ -740,24 +1071,15 @@ async def handle_business_message(
         {}
     )
 
+
     chat_id = chat.get(
         "id"
     )
 
-    if not chat_id:
-        return
 
-
-    if chat.get("type") != "private":
-        return
-
-
-    msg_id = msg.get(
+    message_id = msg.get(
         "message_id"
     )
-
-    if not msg_id:
-        return
 
 
     sender = msg.get(
@@ -765,9 +1087,11 @@ async def handle_business_message(
         {}
     )
 
+
     sender_id = sender.get(
         "id"
     )
+
 
     text = msg.get(
         "text",
@@ -775,94 +1099,159 @@ async def handle_business_message(
     )
 
 
-    # Отримуємо інформацію Business connection
-    conn_info = await tg_api(
-        session,
-        "getBusinessConnection",
-        business_connection_id=conn_id
+    reply_to = msg.get(
+        "reply_to_message"
     )
 
-    if not conn_info.get("ok"):
+
+    if chat.get(
+        "type"
+    ) != "private":
+
+        return
+
+
+    print("")
+    print("==============================================")
+    print("📩 BUSINESS MESSAGE")
+    print("==============================================")
+    print(
+        "chat_id:",
+        chat_id
+    )
+    print(
+        "message_id:",
+        message_id
+    )
+    print(
+        "sender_id:",
+        sender_id
+    )
+    print(
+        "text:",
+        text
+    )
+    print(
+        "business_connection_id:",
+        connection_id
+    )
+    print("==============================================")
+
+
+    # --------------------------------------------------------
+    # BUSINESS CONNECTION
+    # --------------------------------------------------------
+
+    connection = await get_business_connection(
+        session,
+        connection_id
+    )
+
+
+    if not connection:
+
+        return
+
+
+    if not connection.get(
+        "is_enabled",
+        False
+    ):
 
         print(
-            "BUSINESS CONNECTION ERROR:",
-            conn_info.get("description")
+            "❌ Business connection disabled."
         )
 
         return
 
 
-    conn_data = conn_info.get(
-        "result",
-        {}
+    print_business_rights(
+        connection
     )
 
-    if not conn_data.get(
-        "is_enabled",
-        False
-    ):
-        return
 
-
-    owner_id = conn_data.get(
+    owner_id = connection.get(
         "user_chat_id"
     )
 
+
     if not owner_id:
+
+        print(
+            "❌ owner_id не знайдено."
+        )
+
         return
 
 
     # ========================================================
-    # ПОВІДОМЛЕННЯ КЛІЄНТА
+    # CLIENT MESSAGE
     # ========================================================
 
     if sender_id != owner_id:
 
-        # Надсилаємо копію власнику
-        await send_media_to_owner(
+        print(
+            "👤 Це повідомлення КЛІЄНТА."
+        )
+
+
+        # ----------------------------------------------------
+        # FORWARD TO OWNER
+        # ----------------------------------------------------
+
+        owner_result = await send_media_to_owner(
             session,
             owner_id,
             msg
         )
 
 
-        # Автовідповідач
-        if auto_responder_enabled:
+        if not owner_result.get(
+            "ok",
+            False
+        ):
 
-            result = await tg_api(
-                session,
-                "sendMessage",
-                chat_id=chat_id,
-                text=auto_responder_text,
-                business_connection_id=conn_id,
-                reply_parameters={
-                    "message_id": msg_id
-                }
+            print(
+                "❌ Не вдалося переслати власнику:"
             )
 
-            if not result.get("ok"):
-
-                # Сумісність зі старим способом
-                result = await tg_api(
-                    session,
-                    "sendMessage",
-                    chat_id=chat_id,
-                    text=auto_responder_text,
-                    business_connection_id=conn_id,
-                    reply_to_message_id=msg_id
+            print(
+                owner_result.get(
+                    "description"
                 )
+            )
 
 
-            if not result.get("ok"):
+        # ----------------------------------------------------
+        # AUTO RESPONSE
+        # ----------------------------------------------------
 
-                print(
-                    "❌ АВТОВІДПОВІДЬ:",
-                    result.get("description")
-                )
+        if auto_responder_enabled:
+
+            await send_auto_response(
+                session,
+                connection_id,
+                chat_id,
+                message_id
+            )
+
+        else:
+
+            print(
+                "ℹ️ Автовідповідач вимкнений."
+            )
 
 
-        # Якщо користувач зам'ючений
+        # ----------------------------------------------------
+        # MUTE
+        # ----------------------------------------------------
+
         if sender_id in muted_users:
+
+            print(
+                "🤐 Користувач зам'ючений."
+            )
+
 
             if sender_id not in deleted_messages_cache:
 
@@ -878,31 +1267,39 @@ async def handle_business_message(
             )
 
 
-            # Обмеження кешу
             if len(
-                deleted_messages_cache[sender_id]
+                deleted_messages_cache[
+                    sender_id
+                ]
             ) > 100:
 
                 deleted_messages_cache[
                     sender_id
-                ] = deleted_messages_cache[
-                    sender_id
-                ][-100:]
+                ] = (
+                    deleted_messages_cache[
+                        sender_id
+                    ][-100:]
+                )
 
 
-            result = await tg_api(
+            delete_result = await tg_api(
                 session,
                 "deleteMessage",
                 chat_id=chat_id,
-                message_id=msg_id,
-                business_connection_id=conn_id
+                message_id=message_id,
+                business_connection_id=connection_id
             )
 
-            if not result.get("ok"):
+
+            if not delete_result.get(
+                "ok"
+            ):
 
                 print(
-                    "❌ DELETE:",
-                    result.get("description")
+                    "❌ DELETE ERROR:",
+                    delete_result.get(
+                        "description"
+                    )
                 )
 
 
@@ -910,33 +1307,53 @@ async def handle_business_message(
 
 
     # ========================================================
-    # КОМАНДИ ВЛАСНИКА
+    # OWNER MESSAGE / COMMAND
     # ========================================================
 
+    print(
+        "👑 Це повідомлення ВЛАСНИКА."
+    )
+
+
     if not text.startswith("."):
+
         return
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # .mute
-    # --------------------------------------------------------
+    # ========================================================
 
     if text == ".mute":
 
-        target_id = get_reply_user_id(msg)
-
-        if not target_id:
+        if not reply_to:
 
             await tg_api(
                 session,
-                "editMessageText",
+                "sendMessage",
+                business_connection_id=connection_id,
                 chat_id=chat_id,
-                message_id=msg_id,
                 text=(
-                    "❌ Відповідай на повідомлення юзера!"
-                ),
-                business_connection_id=conn_id
+                    "❌ Відповідай на повідомлення "
+                    "користувача."
+                )
             )
+
+            return
+
+
+        target_user = reply_to.get(
+            "from",
+            {}
+        )
+
+
+        target_id = target_user.get(
+            "id"
+        )
+
+
+        if not target_id:
 
             return
 
@@ -950,46 +1367,58 @@ async def handle_business_message(
             session,
             "deleteMessage",
             chat_id=chat_id,
-            message_id=msg_id,
-            business_connection_id=conn_id
+            message_id=message_id,
+            business_connection_id=connection_id
         )
 
 
         await tg_api(
             session,
             "sendMessage",
+            business_connection_id=connection_id,
             chat_id=chat_id,
-            text="мют активовано",
-            business_connection_id=conn_id
+            text="мют активовано"
         )
+
 
         return
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # .umute
     # .unmute
-    # --------------------------------------------------------
+    # ========================================================
 
-    if text in [
-        ".umute",
-        ".unmute"
-    ]:
+    if (
+        text == ".umute"
+        or text == ".unmute"
+    ):
 
-        target_id = get_reply_user_id(msg)
-
-        if not target_id:
+        if not reply_to:
 
             await tg_api(
                 session,
-                "editMessageText",
+                "sendMessage",
+                business_connection_id=connection_id,
                 chat_id=chat_id,
-                message_id=msg_id,
                 text=(
-                    "❌ Відповідай на повідомлення юзера!"
-                ),
-                business_connection_id=conn_id
+                    "❌ Відповідай на повідомлення "
+                    "користувача."
+                )
             )
+
+            return
+
+
+        target_id = reply_to.get(
+            "from",
+            {}
+        ).get(
+            "id"
+        )
+
+
+        if not target_id:
 
             return
 
@@ -1003,46 +1432,52 @@ async def handle_business_message(
             session,
             "deleteMessage",
             chat_id=chat_id,
-            message_id=msg_id,
-            business_connection_id=conn_id
+            message_id=message_id,
+            business_connection_id=connection_id
         )
 
 
         await tg_api(
             session,
             "sendMessage",
+            business_connection_id=connection_id,
             chat_id=chat_id,
             text=(
                 "ви розмючені можете писать"
-            ),
-            business_connection_id=conn_id
+            )
         )
+
 
         return
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # .nomute
-    # --------------------------------------------------------
+    # ========================================================
 
     if text == ".nomute":
 
-        target_id = get_reply_user_id(msg)
-
-        if not target_id:
+        if not reply_to:
 
             await tg_api(
                 session,
-                "editMessageText",
+                "sendMessage",
+                business_connection_id=connection_id,
                 chat_id=chat_id,
-                message_id=msg_id,
                 text=(
-                    "❌ Відповідай на повідомлення!"
-                ),
-                business_connection_id=conn_id
+                    "❌ Відповідай на повідомлення."
+                )
             )
 
             return
+
+
+        target_id = reply_to.get(
+            "from",
+            {}
+        ).get(
+            "id"
+        )
 
 
         messages = deleted_messages_cache.get(
@@ -1055,14 +1490,13 @@ async def handle_business_message(
 
             await tg_api(
                 session,
-                "editMessageText",
+                "sendMessage",
+                business_connection_id=connection_id,
                 chat_id=chat_id,
-                message_id=msg_id,
                 text=(
                     "📭 Немає збережених "
-                    "видалених повідомлень."
-                ),
-                business_connection_id=conn_id
+                    "повідомлень."
+                )
             )
 
             return
@@ -1081,14 +1515,13 @@ async def handle_business_message(
 
         await tg_api(
             session,
-            "editMessageText",
+            "sendMessage",
+            business_connection_id=connection_id,
             chat_id=chat_id,
-            message_id=msg_id,
             text=(
-                "📥 Відновлені повідомлення:\n\n"
+                "📥 Збережені повідомлення:\n\n"
                 + history
-            ),
-            business_connection_id=conn_id
+            )
         )
 
 
@@ -1096,12 +1529,13 @@ async def handle_business_message(
             target_id
         ] = []
 
+
         return
 
 
-    # --------------------------------------------------------
-    # .spam текст кількість
-    # --------------------------------------------------------
+    # ========================================================
+    # .spam
+    # ========================================================
 
     spam_match = re.match(
         r"^\.spam\s+(.+)\s+(\d+)$",
@@ -1109,14 +1543,20 @@ async def handle_business_message(
         re.DOTALL
     )
 
+
     if spam_match:
 
-        spam_text = spam_match.group(1)
+        spam_text = spam_match.group(
+            1
+        )
+
 
         try:
 
             count = int(
-                spam_match.group(2)
+                spam_match.group(
+                    2
+                )
             )
 
         except Exception:
@@ -1124,12 +1564,12 @@ async def handle_business_message(
             count = 1
 
 
-        # Захист від величезної кількості
+        # Безпечний ліміт
         count = max(
             1,
             min(
                 count,
-                100
+                20
             )
         )
 
@@ -1138,8 +1578,8 @@ async def handle_business_message(
             session,
             "deleteMessage",
             chat_id=chat_id,
-            message_id=msg_id,
-            business_connection_id=conn_id
+            message_id=message_id,
+            business_connection_id=connection_id
         )
 
 
@@ -1148,31 +1588,37 @@ async def handle_business_message(
             result = await tg_api(
                 session,
                 "sendMessage",
+                business_connection_id=connection_id,
                 chat_id=chat_id,
-                text=spam_text,
-                business_connection_id=conn_id
+                text=spam_text
             )
 
-            if not result.get("ok"):
+
+            if not result.get(
+                "ok"
+            ):
 
                 print(
-                    "❌ SPAM:",
-                    result.get("description")
+                    "❌ SPAM ERROR:",
+                    result.get(
+                        "description"
+                    )
                 )
 
                 break
 
 
-            # Не забиваємо Telegram API
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(
+                0.25
+            )
 
 
         return
 
 
-    # --------------------------------------------------------
-    # .v / .v20 / .v60
-    # --------------------------------------------------------
+    # ========================================================
+    # .v / .v20 / .v30
+    # ========================================================
 
     animation_match = re.match(
         r"^\.v(\d*)\s+(.+)$",
@@ -1180,11 +1626,17 @@ async def handle_business_message(
         re.DOTALL
     )
 
+
     if animation_match:
 
-        seconds_text = animation_match.group(1)
+        seconds_text = animation_match.group(
+            1
+        )
 
-        animation_text = animation_match.group(2)
+
+        animation_text = animation_match.group(
+            2
+        )
 
 
         if seconds_text:
@@ -1204,7 +1656,6 @@ async def handle_business_message(
             seconds = 10
 
 
-        # Нормальний діапазон
         seconds = max(
             1,
             min(
@@ -1214,52 +1665,13 @@ async def handle_business_message(
         )
 
 
-        # Видаляємо оригінальну команду
-        await tg_api(
-            session,
-            "deleteMessage",
-            chat_id=chat_id,
-            message_id=msg_id,
-            business_connection_id=conn_id
-        )
-
-
-        # Створюємо повідомлення,
-        # яке потім редагуватимемо
-        first = await tg_api(
-            session,
-            "sendMessage",
-            chat_id=chat_id,
-            text=animation_text,
-            business_connection_id=conn_id
-        )
-
-
-        if not first.get("ok"):
-
-            print(
-                "❌ V COMMAND:",
-                first.get("description")
-            )
-
-            return
-
-
-        animation_message_id = (
-            first
-            .get("result", {})
-            .get("message_id")
-        )
-
-
-        if not animation_message_id:
-            return
-
-
-        # Кадри
-        frames = []
+        # Тут НЕ видаляємо команду.
+        # Редагуємо те саме повідомлення.
 
         max_spaces = 8
+
+        frames = []
+
 
         for i in range(
             max_spaces + 1
@@ -1284,19 +1696,20 @@ async def handle_business_message(
 
 
         if not frames:
+
             return
 
 
-        # Не більше ~2 API редагувань/сек
         delay = max(
-            0.5,
+            0.8,
             float(seconds)
             / float(len(frames))
         )
 
 
-        start_time = (
+        end_time = (
             asyncio.get_event_loop().time()
+            + seconds
         )
 
 
@@ -1305,13 +1718,13 @@ async def handle_business_message(
 
         while (
             asyncio.get_event_loop().time()
-            - start_time
-            < seconds
+            < end_time
         ):
 
             frame = frames[
                 index % len(frames)
             ]
+
 
             index += 1
 
@@ -1319,16 +1732,18 @@ async def handle_business_message(
             result = await tg_api(
                 session,
                 "editMessageText",
+                business_connection_id=connection_id,
                 chat_id=chat_id,
-                message_id=animation_message_id,
-                text=frame,
-                business_connection_id=conn_id
+                message_id=message_id,
+                text=frame
             )
 
 
-            if not result.get("ok"):
+            if not result.get(
+                "ok"
+            ):
 
-                description = result.get(
+                error = result.get(
                     "description",
                     ""
                 )
@@ -1336,7 +1751,7 @@ async def handle_business_message(
 
                 if (
                     "message is not modified"
-                    in description.lower()
+                    in error.lower()
                 ):
 
                     await asyncio.sleep(
@@ -1346,26 +1761,12 @@ async def handle_business_message(
                     continue
 
 
-                if (
-                    "message to edit not found"
-                    in description.lower()
-                ):
-
-                    break
-
-
-                if (
-                    "business" in description.lower()
-                    and "invalid" in description.lower()
-                ):
-
-                    break
-
-
                 print(
-                    "❌ V EDIT:",
-                    description
+                    "❌ V ERROR:",
+                    error
                 )
+
+                break
 
 
             await asyncio.sleep(
@@ -1377,7 +1778,79 @@ async def handle_business_message(
 
 
 # ============================================================
-# UPDATE ROUTER
+# BUSINESS CONNECTION UPDATE
+# ============================================================
+
+async def handle_business_connection(
+    session,
+    connection
+):
+
+    connection_id = connection.get(
+        "id"
+    )
+
+
+    if not connection_id:
+
+        return
+
+
+    business_connections[
+        connection_id
+    ] = connection
+
+
+    print("")
+    print("==============================================")
+    print("🔗 BUSINESS CONNECTION UPDATE")
+    print("==============================================")
+    print(
+        "ID:",
+        connection_id
+    )
+    print(
+        "OWNER:",
+        connection.get(
+            "user_chat_id"
+        )
+    )
+    print(
+        "ENABLED:",
+        connection.get(
+            "is_enabled"
+        )
+    )
+
+
+    rights = connection.get(
+        "rights",
+        {}
+    )
+
+
+    print(
+        "CAN_REPLY:",
+        rights.get(
+            "can_reply"
+        )
+    )
+
+
+    print(
+        "CAN_READ_MESSAGES:",
+        rights.get(
+            "can_read_messages"
+        )
+    )
+
+
+    print("==============================================")
+    print("")
+
+
+# ============================================================
+# UPDATE PROCESSOR
 # ============================================================
 
 async def process_update(
@@ -1385,52 +1858,83 @@ async def process_update(
     update
 ):
 
-    global last_update_id
-
-
-    update_id = update.get(
-        "update_id"
-    )
-
-
-    if update_id is not None:
-
-        # Захист від дублювання webhook
-        if update_id <= last_update_id:
-
-            return
-
-
-        last_update_id = update_id
-
-
     try:
 
-        if "message" in update:
+        # ----------------------------------------------------
+        # BUSINESS CONNECTION
+        # ----------------------------------------------------
 
-            await handle_private_message(
+        if "business_connection" in update:
+
+            await handle_business_connection(
                 session,
-                update["message"]
+                update[
+                    "business_connection"
+                ]
             )
 
             return
 
+
+        # ----------------------------------------------------
+        # BUSINESS MESSAGE
+        # ----------------------------------------------------
 
         if "business_message" in update:
 
             await handle_business_message(
                 session,
-                update["business_message"]
+                update[
+                    "business_message"
+                ]
             )
 
             return
 
 
+        # ----------------------------------------------------
+        # EDITED BUSINESS MESSAGE
+        # ----------------------------------------------------
+
+        if "edited_business_message" in update:
+
+            await handle_business_message(
+                session,
+                update[
+                    "edited_business_message"
+                ]
+            )
+
+            return
+
+
+        # ----------------------------------------------------
+        # NORMAL MESSAGE
+        # ----------------------------------------------------
+
+        if "message" in update:
+
+            await handle_private_message(
+                session,
+                update[
+                    "message"
+                ]
+            )
+
+            return
+
+
+        # ----------------------------------------------------
+        # CALLBACK
+        # ----------------------------------------------------
+
         if "callback_query" in update:
 
             await handle_callback_query(
                 session,
-                update["callback_query"]
+                update[
+                    "callback_query"
+                ]
             )
 
             return
@@ -1438,52 +1942,56 @@ async def process_update(
 
     except Exception as e:
 
-        print(
-            "UPDATE ERROR:",
-            repr(e)
+        print("")
+        print("==============================================")
+        print("❌ UPDATE ERROR")
+        print(repr(e))
+        print("==============================================")
+        print("")
+
+
+# ============================================================
+# HTTP HEALTH
+# ============================================================
+
+async def root_handler(
+    request
+):
+
+    return web.Response(
+        text=(
+            "SEVE BOT IS RUNNING\n"
+            "Telegram Business webhook is active."
         )
+    )
 
 
-# ============================================================
-# HTTP SERVER
-# ============================================================
-
-async def health(request):
+async def health_handler(
+    request
+):
 
     return web.json_response(
         {
             "status": "ok",
-            "service": "seve bot",
-            "telegram_ready": telegram_ready,
-            "render": IS_RENDER
+            "service": "seve_bot"
         }
     )
 
 
-async def root(request):
+# ============================================================
+# TELEGRAM WEBHOOK
+# ============================================================
 
-    return web.Response(
-        text=(
-            "SEVE BOT is running!\n"
-            "Telegram: "
-            + (
-                "READY"
-                if telegram_ready
-                else "NOT READY"
-            )
-        )
-    )
+async def telegram_webhook(
+    request
+):
 
-
-async def telegram_webhook(request):
-
-    global last_update_id
-
-    # Перевірка секрету
+    # Secret перевірка
     received_secret = request.headers.get(
         "X-Telegram-Bot-Api-Secret-Token",
         ""
     )
+
 
     if received_secret != WEBHOOK_SECRET:
 
@@ -1501,14 +2009,17 @@ async def telegram_webhook(request):
 
         return web.Response(
             status=400,
-            text="Bad JSON"
+            text="Invalid JSON"
         )
 
 
-    # Повертаємо 200 максимально швидко.
-    # Обробку запускаємо окремо.
-    session = request.app["telegram_session"]
+    session = request.app[
+        "telegram_session"
+    ]
 
+
+    # Відповідаємо Telegram одразу.
+    # Обробка йде окремим task.
     asyncio.create_task(
         process_update(
             session,
@@ -1524,29 +2035,39 @@ async def telegram_webhook(request):
 
 
 # ============================================================
-# WEB SERVER START
+# START HTTP SERVER
 # ============================================================
 
-async def start_http_server():
-
-    global http_ready
+async def start_http_server(
+    session
+):
 
     app = web.Application()
 
-    app["telegram_session"] = None
+
+    app["telegram_session"] = session
+
 
     app.router.add_get(
         "/",
-        root
+        root_handler
     )
+
 
     app.router.add_get(
         "/health",
-        health
+        health_handler
     )
 
+
+    webhook_path = (
+        "/telegram/webhook/"
+        + WEBHOOK_SECRET
+    )
+
+
     app.router.add_post(
-        "/telegram/webhook/" + WEBHOOK_SECRET,
+        webhook_path,
         telegram_webhook
     )
 
@@ -1555,11 +2076,11 @@ async def start_http_server():
         app
     )
 
+
     await runner.setup()
 
 
-    # КЛЮЧОВЕ ДЛЯ RENDER:
-    # 0.0.0.0 + PORT
+    # КЛЮЧОВЕ ДЛЯ RENDER
     site = web.TCPSite(
         runner,
         "0.0.0.0",
@@ -1567,29 +2088,21 @@ async def start_http_server():
     )
 
 
-    try:
-
-        await site.start()
-
-    except Exception as e:
-
-        print("================================================")
-        print("❌ НЕ ВДАЛОСЯ ВІДКРИТИ PORT")
-        print("PORT =", PORT)
-        print("ERROR =", repr(e))
-        print("================================================")
-
-        raise
+    await site.start()
 
 
-    http_ready = True
+    print("")
+    print("==================================================")
+    print("✅ HTTP SERVER ЗАПУЩЕНИЙ")
+    print("==================================================")
+    print(
+        "HOST: 0.0.0.0"
+    )
+    print(
+        "PORT:",
+        PORT
+    )
 
-
-    print("================================================")
-    print("HTTP SERVER ЗАПУЩЕНИЙ")
-    print("HOST: 0.0.0.0")
-    print("PORT:", PORT)
-    print("RENDER:", IS_RENDER)
 
     if RENDER_EXTERNAL_URL:
 
@@ -1598,133 +2111,151 @@ async def start_http_server():
             RENDER_EXTERNAL_URL
         )
 
-    print("================================================")
+
+    print(
+        "WEBHOOK PATH:",
+        webhook_path
+    )
+
+
+    print("==================================================")
+    print("")
 
 
     return runner
 
 
 # ============================================================
-# WEBHOOK SETUP
+# SET WEBHOOK
 # ============================================================
 
-async def setup_webhook(
+async def setup_render_webhook(
     session
 ):
 
-    global telegram_ready
-
-
-    if not TOKEN:
+    if not RENDER_EXTERNAL_URL:
 
         print(
-            "BOT_TOKEN відсутній."
+            "❌ RENDER_EXTERNAL_URL відсутній."
         )
 
         return False
 
 
-    # Якщо Render
-    if IS_RENDER:
-
-        if not RENDER_EXTERNAL_URL:
-
-            print(
-                "❌ RENDER_EXTERNAL_URL відсутній."
-            )
-
-            return False
-
-
-        webhook_url = (
-            RENDER_EXTERNAL_URL.rstrip("/")
-            + "/telegram/webhook/"
-            + WEBHOOK_SECRET
-        )
-
-
-        print(
-            "Встановлюємо Telegram webhook:"
-        )
-
-        print(
-            webhook_url
-        )
-
-
-        result = await tg_api(
-            session,
-            "setWebhook",
-            url=webhook_url,
-            secret_token=WEBHOOK_SECRET,
-            allowed_updates=[]
-        )
-
-
-        if not result.get("ok"):
-
-            print(
-                "❌ WEBHOOK ERROR:",
-                result.get("description")
-            )
-
-            return False
-
-
-        print(
-            "✅ Telegram webhook встановлено."
-        )
-
-
-        info = await tg_api(
-            session,
-            "getWebhookInfo"
-        )
-
-
-        if info.get("ok"):
-
-            webhook_info = info.get(
-                "result",
-                {}
-            )
-
-            print(
-                "Webhook URL:",
-                webhook_info.get("url")
-            )
-
-            print(
-                "Pending updates:",
-                webhook_info.get(
-                    "pending_update_count",
-                    0
-                )
-            )
-
-
-        telegram_ready = True
-
-        return True
-
-
-    # ========================================================
-    # ЛОКАЛЬНО:
-    # polling
-    # ========================================================
-
-    await tg_api(
-        session,
-        "deleteWebhook",
-        drop_pending_updates=True
+    webhook_url = (
+        RENDER_EXTERNAL_URL.rstrip("/")
+        + "/telegram/webhook/"
+        + WEBHOOK_SECRET
     )
 
-
-    telegram_ready = True
 
     print(
-        "Локальний режим: Telegram polling."
+        "Встановлення Telegram webhook..."
     )
+
+
+    print(
+        webhook_url
+    )
+
+
+    result = await tg_api(
+        session,
+        "setWebhook",
+        url=webhook_url,
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=[
+            "message",
+            "callback_query",
+            "business_connection",
+            "business_message",
+            "edited_business_message"
+        ],
+        drop_pending_updates=False
+    )
+
+
+    print(
+        "setWebhook RESULT:",
+        result
+    )
+
+
+    if not result.get(
+        "ok"
+    ):
+
+        return False
+
+
+    # Перевіряємо webhook
+    info = await tg_api(
+        session,
+        "getWebhookInfo"
+    )
+
+
+    print("")
+    print("==============================================")
+    print("WEBHOOK INFO")
+    print("==============================================")
+
+
+    if info.get(
+        "ok"
+    ):
+
+        webhook_info = info.get(
+            "result",
+            {}
+        )
+
+
+        print(
+            "URL:",
+            webhook_info.get(
+                "url"
+            )
+        )
+
+
+        print(
+            "PENDING:",
+            webhook_info.get(
+                "pending_update_count",
+                0
+            )
+        )
+
+
+        print(
+            "LAST ERROR:",
+            webhook_info.get(
+                "last_error_message",
+                "немає"
+            )
+        )
+
+
+        print(
+            "LAST ERROR DATE:",
+            webhook_info.get(
+                "last_error_date",
+                "немає"
+            )
+        )
+
+
+    else:
+
+        print(
+            info
+        )
+
+
+    print("==============================================")
+    print("")
+
 
     return True
 
@@ -1737,11 +2268,15 @@ async def local_polling(
     session
 ):
 
-    global last_update_id
-
-
     print(
-        "Очікування Telegram повідомлень..."
+        "Локальний режим: polling."
+    )
+
+
+    await tg_api(
+        session,
+        "deleteWebhook",
+        drop_pending_updates=False
     )
 
 
@@ -1757,18 +2292,30 @@ async def local_polling(
                 "getUpdates",
                 offset=offset,
                 timeout=25,
-                allowed_updates=[]
+                allowed_updates=[
+                    "message",
+                    "callback_query",
+                    "business_connection",
+                    "business_message",
+                    "edited_business_message"
+                ]
             )
 
 
-            if not result.get("ok"):
+            if not result.get(
+                "ok"
+            ):
 
                 print(
                     "getUpdates ERROR:",
-                    result.get("description")
+                    result.get(
+                        "description"
+                    )
                 )
 
-                await asyncio.sleep(3)
+                await asyncio.sleep(
+                    3
+                )
 
                 continue
 
@@ -1805,145 +2352,81 @@ async def local_polling(
         except Exception as e:
 
             print(
-                "Polling ERROR:",
+                "POLLING ERROR:",
                 repr(e)
             )
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(
+                3
+            )
 
 
 # ============================================================
-# TELEGRAM INITIALIZATION
+# CHECK BOT
 # ============================================================
 
-async def telegram_start(
+async def check_bot(
     session
 ):
 
-    global telegram_ready
-
-
-    if not TOKEN:
-
-        print(
-            "================================================"
-        )
-
-        print(
-            "BOT_TOKEN НЕ ВСТАНОВЛЕНИЙ."
-        )
-
-        print(
-            "Бот не може підключитися до Telegram."
-        )
-
-        print(
-            "================================================"
-        )
-
-        return
-
-
-    # Перевіряємо токен
-    me = await tg_api(
+    result = await tg_api(
         session,
         "getMe"
     )
 
 
-    if not me.get("ok"):
+    if not result.get(
+        "ok"
+    ):
 
+        print("")
+        print("==============================================")
+        print("❌ BOT TOKEN НЕ ПРАЦЮЄ")
+        print("==============================================")
         print(
-            "================================================"
+            result.get(
+                "description"
+            )
         )
+        print("==============================================")
+        print("")
 
-        print(
-            "❌ TELEGRAM TOKEN НЕ ПРАЦЮЄ"
-        )
-
-        print(
-            me.get("description")
-        )
-
-        print(
-            "================================================"
-        )
-
-        return
+        return False
 
 
-    bot_info = me.get(
+    bot = result.get(
         "result",
         {}
     )
 
 
+    print("")
+    print("==============================================")
+    print("🤖 TELEGRAM BOT")
+    print("==============================================")
     print(
-        "Telegram bot:",
-        bot_info.get("username")
+        "NAME:",
+        bot.get(
+            "first_name"
+        )
     )
-
     print(
-        "Telegram ID:",
-        bot_info.get("id")
+        "USERNAME:",
+        bot.get(
+            "username"
+        )
     )
-
-
-    # Webhook / polling
-    if IS_RENDER:
-
-        success = await setup_webhook(
-            session
+    print(
+        "ID:",
+        bot.get(
+            "id"
         )
-
-        if not success:
-
-            print(
-                "❌ Webhook не встановлено."
-            )
-
-            return
+    )
+    print("==============================================")
+    print("")
 
 
-        print(
-            "================================================"
-        )
-
-        print(
-            "TELEGRAM WEBHOOK READY"
-        )
-
-        print(
-            "Бот готовий приймати повідомлення."
-        )
-
-        print(
-            "================================================"
-        )
-
-        # Тут нічого не polling.
-        # HTTP сервер приймає Telegram updates.
-        while True:
-
-            await asyncio.sleep(
-                3600
-            )
-
-
-    else:
-
-        success = await setup_webhook(
-            session
-        )
-
-        if not success:
-
-            return
-
-
-        await local_polling(
-            session
-        )
+    return True
 
 
 # ============================================================
@@ -1951,9 +2434,6 @@ async def telegram_start(
 # ============================================================
 
 async def main():
-
-    global telegram_ready
-
 
     timeout = aiohttp.ClientTimeout(
         total=40,
@@ -1975,86 +2455,113 @@ async def main():
 
 
         # ====================================================
-        # СПОЧАТКУ ВІДКРИВАЄМО PORT
+        # СПОЧАТКУ PORT
         # ====================================================
 
-        runner = await start_http_server()
-
-
-        # Передаємо Telegram session у HTTP app
-        # через route app object
-        for route in runner.app.router.routes():
-
-            pass
-
-
-        # aiohttp app
-        runner.app["telegram_session"] = session
+        runner = await start_http_server(
+            session
+        )
 
 
         # ====================================================
-        # ПОТІМ TELEGRAM
+        # ПЕРЕВІРКА BOT TOKEN
         # ====================================================
 
-        try:
+        bot_ok = await check_bot(
+            session
+        )
 
-            await telegram_start(
+
+        if not bot_ok:
+
+            print(
+                "HTTP сервер залишається запущеним,"
+                " але Telegram не працює."
+            )
+
+            while True:
+
+                await asyncio.sleep(
+                    3600
+                )
+
+
+        # ====================================================
+        # RENDER
+        # ====================================================
+
+        if IS_RENDER:
+
+            webhook_ok = await setup_render_webhook(
                 session
             )
 
-        except asyncio.CancelledError:
 
-            raise
+            if not webhook_ok:
 
-        except Exception as e:
+                print("")
+                print("==============================================")
+                print("❌ WEBHOOK НЕ ВСТАНОВЛЕНО")
+                print("==============================================")
+                print("")
+                print(
+                    "Перевір RENDER_EXTERNAL_URL."
+                )
+                print("")
+                print("==============================================")
 
-            print(
-                "================================================"
-            )
 
-            print(
-                "❌ TELEGRAM START ERROR"
-            )
+            else:
 
-            print(
-                repr(e)
-            )
+                print("")
+                print("==============================================")
+                print("✅ TELEGRAM WEBHOOK READY")
+                print("==============================================")
+                print(
+                    "Бот чекає Business повідомлення."
+                )
+                print("==============================================")
+                print("")
 
-            print(
-                "HTTP сервер при цьому продовжує працювати."
-            )
 
-            print(
-                "================================================"
-            )
+            # Не завершуємо процес.
+            while True:
+
+                await asyncio.sleep(
+                    3600
+                )
 
 
         # ====================================================
-        # Якщо telegram_start завершився,
-        # HTTP все одно має жити.
+        # LOCAL
         # ====================================================
 
-        while True:
+        else:
 
-            await asyncio.sleep(
-                3600
+            await local_polling(
+                session
             )
 
 
 # ============================================================
-# START
+# PROGRAM START
 # ============================================================
 
 if __name__ == "__main__":
 
     print("")
-    print("==============================================")
+    print("==================================================")
     print("SEVE BOT")
-    print("Запуск...")
-    print("==============================================")
-    print("PORT =", PORT)
-    print("RENDER =", IS_RENDER)
-    print("==============================================")
+    print("==================================================")
+    print(
+        "Render:",
+        IS_RENDER
+    )
+    print(
+        "PORT:",
+        PORT
+    )
+    print("==================================================")
     print("")
 
 
@@ -2064,28 +2571,24 @@ if __name__ == "__main__":
             main()
         )
 
+
     except KeyboardInterrupt:
 
         print(
             "Бот зупинений."
         )
 
+
     except Exception as e:
 
-        print(
-            "================================================"
-        )
-
-        print(
-            "КРИТИЧНА ПОМИЛКА:"
-        )
-
+        print("")
+        print("==================================================")
+        print("❌ КРИТИЧНА ПОМИЛКА")
+        print("==================================================")
         print(
             repr(e)
         )
-
-        print(
-            "================================================"
-        )
+        print("==================================================")
+        print("")
 
         raise
